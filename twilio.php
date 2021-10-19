@@ -33,12 +33,12 @@ function mnml2fa_send_via_twilio( $phone, $code ) {
 	$result = curl_exec($ch);
 	curl_close($ch);
 	$result = json_decode($result);
-	error_log("twilio: " . var_export($result,true));
 
-	// if ( 'queued' !== $result->status ) {
-		// error_log("twilio failed: " . var_export($result,true));
-		// return false;
-	// }
+	if ( empty( $result->date_created ) || !empty( $result->code ) ) {
+		error_log("twilio failed: " . var_export($result,true));
+		return false;
+	}
+	return true;
 }
 
 

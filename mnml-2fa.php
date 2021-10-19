@@ -9,6 +9,7 @@
  * License:     GPLv2 or later
  * License URI: http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
  */
+defined('ABSPATH') || exit;
 
 $settings = get_option( 'mnml2fa', array() );
 if ( !empty($settings['twilio_sid']) && !empty($settings['twilio_api_sid']) && !empty($settings['twilio_api_secret']) && !empty($settings['twilio_from']) ) {
@@ -23,16 +24,18 @@ function mnml2fa_authenticate( $user, $user_name ) {
 	// only run if $user is a user object, which means user/pass were accepted
 	if ( $user instanceof WP_User ) {
 		// is user that needs 2fa
-		if ( ! $user->has_cap('edit_posts') ) return $user;
+		if ( ! $user->has_cap('administrator') ) return $user;
 
 		$settings = get_option( 'mnml2fa', array() );
 
 		$code = sprintf( "%06s", random_int(0, 999999) );// six digit code
 		$key = bin2hex( random_bytes(16) );// 2nd code hidden in the code form, to make it even more impossible
 		
+		$sent = false;
 		if ( function_exists('mnml2fa_send_via_twilio') && $phone = get_user_meta( $user->ID, 'mnml2fano', true ) ) {
-			mnml2fa_send_via_twilio( $phone, $code );
-		} else {
+			$sent = mnml2fa_send_via_twilio( $phone, $code );
+		}
+		if ( ! $sent ) {
 			$email = $user->data->user_email;// $user->get('user_email')
 			if ( ! $email ) {
 				error_log("no email in mnml2fa");
@@ -49,13 +52,15 @@ function mnml2fa_authenticate( $user, $user_name ) {
 				$body = str_ireplace( '%code%', $code, $settings['email_body'], $n );
 				if (0===$n) $body .= " $code";// add the code on the end if they didn't use the %code% merge tag in their message
 			}
-			wp_mail( $email, $subject, $body );
+			$sent = wp_mail( $email, $subject, $body );
 		}
 
-		set_transient( "mnml2fa_{$code}{$key}", $user->ID, 300 );
-		$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? "&redirect_to=" . $_REQUEST['redirect_to'] : "";
-		wp_safe_redirect( "wp-login.php?action=2fa&k=" . $key . $redirect_to );
-		exit;
+		if ( $sent ) {
+			set_transient( "mnml2fa_{$code}{$key}", $user->ID, 300 );
+			$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? "&redirect_to=" . $_REQUEST['redirect_to'] : "";
+			wp_safe_redirect( "wp-login.php?action=2fa&k=" . $key . $redirect_to );
+			exit;
+		}
 	}
 	elseif ( !empty( $_POST['mnml2facode'] ) && !empty( $_POST['mnml2fakey'] ) )
 	{
@@ -105,12 +110,12 @@ function mnml2fa_login_form(){
 	login_header( 'New Device Authentication', '<p class="message">A code was just sent to your security device.  Please enter it to continue.</p>' );
 	
 	?>
-
+	<style>#mnml2facode::-webkit-inner-spin-button{display:none}</style>
 	<form name="2fa" id="2fa" action="<?php echo esc_url( network_site_url( 'wp-login.php', 'login_post' ) ); ?>" method="post">
 		<input type="hidden" name="mnml2fakey" value="<?php echo $key; ?>" />
 		<input type="hidden" name="redirect_to" value="<?php echo esc_attr( $redirect_to ); ?>" />
 		<p>
-			<input type="text" name="mnml2facode" id="mnml2facode" class="input" size="20"  autocomplete="off" />
+			<input type="number" name="mnml2facode" id="mnml2facode" class="input" size="20"  autocomplete="off" />
 		</p>
 		<p class="submit">
 			<input type="submit" name="wp-submit" id="wp-submit" class="button button-primary button-large" value="Submit" />
