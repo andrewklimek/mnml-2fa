@@ -6,7 +6,7 @@ function mnml2fa_send_via_twilio( $phone, $code ) {
 	$settings = get_option( 'mnml2fa' );
 
 	// API keys - does it have to be type "main" ?
-	$sid = $settings['twilio_sid'];// Account SID
+	$sid = $settings['twilio_account_sid'];// Account SID
 	$user = $settings['twilio_api_sid'];// API SID
 	$pass = $settings['twilio_api_secret'];// API Secret
 	$from = $settings['twilio_from'];// from can just be a text string somehow... not in the US though.  See https://www.twilio.com/docs/sms/send-messages#use-an-alphanumeric-sender-id
