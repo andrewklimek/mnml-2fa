@@ -4,7 +4,7 @@ namespace mnml2fa;
  * Plugin Name: Mnml Two-Factor Authentication
  * Plugin URI:  https://github.com/andrewklimek/mnml-2fa
  * Description: 2-factor authentication on the native login form.  Email and SMS via Twilio
- * Version:     1.0
+ * Version:     1.1
  * Author:      Andrew Klimek
  * Author URI:  https://github.com/andrewklimek
  * License:     GPLv2 or later
@@ -83,9 +83,6 @@ function api_send_link( $request ) {
 
 function get_link_button() {
 
-	// if ( $_SERVER['REMOTE_ADDR'] !== '76.73.242.188' ) return;
-	// if ( !isset( $_GET['linktest'] ) ) return;
-
 	// echo "<div style='display:flex;align-items:center'><div style='height:1px;width:50%;background:currentColor'></div><div style='padding:1ex'>OR</div><div style='height:1px;width:50%;background:currentColor'></div></div>";
 	?>
 	<button id=mnml-magic-link>Get Sign-on Link</button>
@@ -103,9 +100,6 @@ function get_link_button() {
 }
  
 function signon_link_styles() {
-	
-	// if ( $_SERVER['REMOTE_ADDR'] !== '76.73.242.188' ) return;
-	// if ( !isset( $_GET['linktest'] ) ) return;
 	?>
 <style>
 .login-password, .frm_submit,/* formidable */
@@ -118,24 +112,26 @@ function signon_link_styles() {
 
 
 function authenticate( $user, $user_name ) {
-	// error_log("do we get here? authenticate 1");
+
 	// only run if $user is a user object, which means user/pass were accepted
-	if ( $user instanceof WP_User ) {
+	if ( $user instanceof \WP_User ) {
 		// is user that needs 2fa
+
 		if ( ! $user->has_cap('administrator') ) return $user;
-
-		if ( $_SERVER['REMOTE_ADDR'] === '76.73.242.188' ) return $user;
-
+		
+		// if ( $_SERVER['REMOTE_ADDR'] === '0000000' ) return $user;
+		
 		$settings = (object) get_option( 'mnml2fa', array() );
-
+		
 		$code = sprintf( "%06s", random_int(0, 999999) );// six digit code
 		$key = bin2hex( random_bytes(16) );// 2nd code hidden in the code form, to make it even more impossible
 		
 		$sent = false;
 		if ( function_exists(__NAMESPACE__.'\send_via_twilio') && $phone = get_user_meta( $user->ID, 'mnml2fano', true ) ) {
-			$sent = mnml2fa_send_via_twilio( $phone, $code );
+			$sent = send_via_twilio( $phone, $code );
 		}
 		if ( ! $sent ) {
+
 			$email = $user->data->user_email;// $user->get('user_email')
 			if ( ! $email ) {
 				error_log("no email in mnml2fa");
@@ -160,6 +156,8 @@ function authenticate( $user, $user_name ) {
 			$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? "&redirect_to=" . $_REQUEST['redirect_to'] : "";
 			wp_safe_redirect( "wp-login.php?action=2fa&k=" . $key . $redirect_to );
 			exit;
+		} else {
+			error_log("not sent");
 		}
 	}
 	elseif ( !empty( $_POST['mnml2facode'] ) && !empty( $_POST['mnml2fakey'] ) )

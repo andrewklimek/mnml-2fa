@@ -1,7 +1,8 @@
 <?php
+namespace mnml2fa;
+defined('ABSPATH') || exit;
 
-
-function mnml2fa_send_via_twilio( $phone, $code ) {
+function send_via_twilio( $phone, $code ) {
 
 	$settings = get_option( 'mnml2fa' );
 
@@ -45,11 +46,11 @@ function mnml2fa_send_via_twilio( $phone, $code ) {
 /**
  * phone number field in user profile
  */
-add_action('show_user_profile','mnml2fa_usermeta_form_field');
-add_action('edit_user_profile','mnml2fa_usermeta_form_field');
-add_action('personal_options_update','mnml2fa_usermeta_form_field_update');
-add_action('edit_user_profile_update','mnml2fa_usermeta_form_field_update');
-function mnml2fa_usermeta_form_field( $user ) {
+add_action('show_user_profile',__NAMESPACE__.'\usermeta_form_field');
+add_action('edit_user_profile',__NAMESPACE__.'\usermeta_form_field');
+add_action('personal_options_update',__NAMESPACE__.'\usermeta_form_field_update');
+add_action('edit_user_profile_update',__NAMESPACE__.'\usermeta_form_field_update');
+function usermeta_form_field( $user ) {
 	?>
 	<h3>2FA Settings</h3>
 	<table class="form-table">
@@ -61,7 +62,7 @@ function mnml2fa_usermeta_form_field( $user ) {
 	</table>
 	<?php
 }
-function mnml2fa_usermeta_form_field_update( $user_id ) {
+function usermeta_form_field_update( $user_id ) {
 	if ( ! current_user_can( 'edit_user', $user_id ) ) return false;
 	// $number = ltrim( filter_input( INPUT_POST, "mnml2fano", FILTER_SANITIZE_NUMBER_INT ), '+' );
 	if ( isset( $_POST['mnml2fano'] ) ) {// not sure if its ever not set
