@@ -265,6 +265,16 @@ function admin_menu() {
 	add_submenu_page( 'options-general.php', 'Mnml 2FA', 'Mnml 2FA', 'edit_users', 'mnml2fa', __NAMESPACE__.'\settings_page' );
 }
 
+// add_filter( 'plugin_action_links', __NAMESPACE__.'\add_settings_link', 10, 2 );
+function add_settings_link( $links, $file ) {
+	if ( $file === 'mnml-2fa/mnml-2fa.php' && current_user_can( 'manage_options' ) ) {
+		$url = admin_url( 'options-general.php?page=mnml2fa' );
+		$links = (array) $links;// Prevent warnings in PHP 7.0+ when a plugin uses this filter incorrectly.
+		$links[] = sprintf( '<a href="%s">%s</a>', $url, 'Settings' );
+	}
+	return $links;
+}
+
 function settings_page() {
 
 	$fields = array_fill_keys([
