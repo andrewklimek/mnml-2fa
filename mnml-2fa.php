@@ -119,7 +119,7 @@ function authenticate( $user, $user_name ) {
 
 		if ( ! $user->has_cap('administrator') ) return $user;
 		
-		// if ( $_SERVER['REMOTE_ADDR'] === '0000000' ) return $user;
+		// if ( $_SERVER['REMOTE_ADDR'] === '76.73.242.188' ) return $user;
 		
 		$settings = (object) get_option( 'mnml2fa', array() );
 		
@@ -154,7 +154,8 @@ function authenticate( $user, $user_name ) {
 		if ( $sent ) {
 			set_transient( "mnml2fa_{$code}{$key}", $user->ID, 300 );
 			$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? "&redirect_to=" . $_REQUEST['redirect_to'] : "";
-			wp_safe_redirect( "wp-login.php?action=2fa&k=" . $key . $redirect_to );
+			$rememberme = ! empty( $_REQUEST['rememberme'] ) ? "&rememberme=1" : "";
+			wp_safe_redirect( "wp-login.php?action=2fa&k=" . $key . $rememberme . $redirect_to );
 			exit;
 		} else {
 			error_log("not sent");
@@ -168,6 +169,7 @@ function authenticate( $user, $user_name ) {
 		
 		if ( ! $user_id ) {
 			error_log("transient did not exist for code {$_POST['mnml2facode']} key {$_POST['mnml2fakey']}");
+			return new \WP_Error( 'invalid_code', 'The security code was invalid or expired.  Please try again.' );
 		} else {
 			$user = get_user_by('id', $user_id);
 			// error_log( "logged in user {$user->data->user_login} from IP {$_SERVER['REMOTE_ADDR']}");
@@ -185,6 +187,7 @@ function authenticate( $user, $user_name ) {
 		
 		if ( ! $user_id ) {
 			error_log("transient did not exist for code key {$_GET['mnml2fakey']}");
+			return new \WP_Error( 'invalid_link', 'The link was expired.  Please try again.' );
 		} else {
 			$user = get_user_by('id', $user_id);
 			// error_log( "logged in user {$user->data->user_login} from IP {$_SERVER['REMOTE_ADDR']}");
@@ -201,6 +204,7 @@ function authenticate( $user, $user_name ) {
 function login_form(){
 
 	$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? $_REQUEST['redirect_to'] : home_url();// this should always be set though see https://github.com/WordPress/WordPress/blob/c6028577a462f235da67e5d3dcf1dc42f9a96669/wp-login.php#L1226
+	$rememberme = ! empty( $_REQUEST['rememberme'] );
 
 	// if ( 'POST' === $_SERVER['REQUEST_METHOD'] ) {
 		// check code
@@ -232,6 +236,9 @@ function login_form(){
 		<p>
 			<input type="number" name="mnml2facode" id="mnml2facode" class="input" size="20"  autocomplete="off" />
 		</p>
+		<p class="forgetmenot">
+			<input name="rememberme" type="checkbox" id="rememberme" value="forever" <?php checked( $rememberme ); ?> /> <label for="rememberme"><?php esc_html_e( 'Remember Me' ); ?></label>
+		</p>	
 		<p class="submit">
 			<input type="submit" name="wp-submit" id="wp-submit" class="button button-primary button-large" value="Submit" />
 		</p>
