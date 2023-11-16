@@ -24,7 +24,7 @@ add_filter( 'authenticate', __NAMESPACE__.'\authenticate', 21, 2 );// normal pas
 if ( !empty($settings->auto_login_link) ) {
 	add_action( 'login_form', __NAMESPACE__.'\get_link_button' );
 	add_action( 'login_form', __NAMESPACE__.'\signon_link_styles', 0 );
-	// this would be ebtter but Formidable doesnt use it.
+	// this would be better but Formidable doesnt use it.
 	// add_action( 'login_head', __NAMESPACE__.'\signon_link_styles' );
 
 	add_action( 'after_setup_theme', __NAMESPACE__.'\signon' );
@@ -32,7 +32,11 @@ if ( !empty($settings->auto_login_link) ) {
 
 function signon() {
 	if ( !empty( $_GET['mnml2fakey'] ) ) {
-		$user = wp_signon();
+		$creds = [ 'user_login' => '', 'user_password' => '', 'remember' => false ];
+		if ( !empty( $_GET['rm'] ) ) {
+			$creds['remember'] = true;
+		}
+		$user = wp_signon( $creds );
 	}
 }
 
@@ -44,12 +48,12 @@ function register_api_endpoint() {
 function api_send_link( $request ) {
 	$data = $request->get_params();
 	// error_log( var_export($data, 1));
-	if ( empty( $data['login'] ) ) return;
-	$user = get_user_by('login', $data['login'] );
+	if ( empty( $data['log'] ) ) return '';
+	$user = get_user_by('login', $data['log'] );
 	
-	if ( ! $user && strpos( $data['login'], '@' ) ) {
-		$data['login'] = sanitize_user( wp_unslash( $data['login'] ) );// this is done before the login check as well on ligon.php but get_user_by sanitizes for 'login' case... see https://github.com/WordPress/wordpress-develop/blob/847328068d8d5fef10cd76df635fafd6b47556d9/src/wp-login.php#L1214
-		$user = get_user_by( 'email', $data['login'] );
+	if ( ! $user && strpos( $data['log'], '@' ) ) {
+		$data['log'] = sanitize_user( wp_unslash( $data['log'] ) );// this is done before the login check as well on ligon.php but get_user_by sanitizes for 'login' case... see https://github.com/WordPress/wordpress-develop/blob/847328068d8d5fef10cd76df635fafd6b47556d9/src/wp-login.php#L1214
+		$user = get_user_by( 'email', $data['log'] );
 	}
 
 	if ( ! $user ) 	return "Check your email for the sign in link!";// Dont want to admit the user doesnt esists
@@ -57,6 +61,7 @@ function api_send_link( $request ) {
 	$key = bin2hex( random_bytes(16) );// 2nd code hidden in the code form, to make it even more impossible
 	
 	$link = esc_url( site_url( 'wp-login.php' ) ) . "?mnml2fakey={$key}";
+	if ( !empty( $data['rememberme'] ) ) $link .= "&rm=1";
 	$subject = "Your sign-in link";
 	$body = "<a href='{$link}'>click to sign in!</a>";// default
 	$headers = ['Content-Type: text/html;'];
@@ -88,26 +93,23 @@ function get_link_button() {
 	<button id=mnml-magic-link>Get Sign-on Link</button>
 	<script>
 		// document.querySelector('#mnml-magic-link').onclick = e => {
-		document.querySelector('form').onsubmit = e => {
+		document.querySelector('form').addEventListener( 'submit', e => {
 			e.preventDefault();
-			var login = document.querySelector('[name=log]').value;
-			if ( login )
-			fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"login":"'+login+'"}'}).then(r=>{return r.json()}).then(r=>{e.target.innerText=r});
-		}
+			var f = new FormData(e.target);
+			if ( f.get('log') )
+			fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',body: f }).then(r=>{return r.json()}).then(r=>{e.target.innerText=r});
+			// var log = document.querySelector('[name=log]').value;
+			// if ( log )
+			// fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"log":"'+log+'"}'}).then(r=>{return r.json()}).then(r=>{e.target.innerText=r});
+
+		});
 	</script>
 	<?php
 
 }
  
 function signon_link_styles() {
-	?>
-<style>
-.login-password, .frm_submit,/* formidable */
-.user-pass-wrap {
-	display: none;
-}
-</style>
-	<?php
+	echo "<style>.login-password, [name=wp-submit], .user-pass-wrap { display: none !important; }</style>";
 }
 
 
@@ -154,7 +156,7 @@ function authenticate( $user, $user_name ) {
 		if ( $sent ) {
 			set_transient( "mnml2fa_{$code}{$key}", $user->ID, 300 );
 			$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? "&redirect_to=" . $_REQUEST['redirect_to'] : "";
-			$rememberme = ! empty( $_REQUEST['rememberme'] ) ? "&rememberme=1" : "";
+			$rememberme = ! empty( $_REQUEST['rememberme'] ) ? "&rm=1" : "";
 			wp_safe_redirect( "wp-login.php?action=2fa&k=" . $key . $rememberme . $redirect_to );
 			exit;
 		} else {
@@ -179,7 +181,7 @@ function authenticate( $user, $user_name ) {
 			}
 		}
 	}
-	elseif ( !empty( $_GET['mnml2fakey'] ) )
+	elseif ( !empty( $_GET['mnml2fakey'] ) )// Magic Link
 	{
 		$settings = (object) get_option( 'mnml2fa', array() );
 		
@@ -204,7 +206,7 @@ function authenticate( $user, $user_name ) {
 function login_form(){
 
 	$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? $_REQUEST['redirect_to'] : home_url();// this should always be set though see https://github.com/WordPress/WordPress/blob/c6028577a462f235da67e5d3dcf1dc42f9a96669/wp-login.php#L1226
-	$rememberme = ! empty( $_REQUEST['rememberme'] );
+	$rememberme = ! empty( $_GET['rm'] );
 
 	// if ( 'POST' === $_SERVER['REQUEST_METHOD'] ) {
 		// check code
