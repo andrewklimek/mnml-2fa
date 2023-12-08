@@ -4,7 +4,7 @@ namespace mnml2fa;
  * Plugin Name: Mnml Two-Factor Authentication
  * Plugin URI:  https://github.com/andrewklimek/mnml-2fa
  * Description: 2-factor authentication on the native login form.  Email and SMS via Twilio
- * Version:     1.1
+ * Version:     1.2
  * Author:      Andrew Klimek
  * Author URI:  https://github.com/andrewklimek
  * License:     GPLv2 or later
@@ -26,14 +26,21 @@ if ( !empty($settings->auto_login_link) ) {
 	add_action( 'login_form', __NAMESPACE__.'\signon_link_styles', 0 );
 	// this would be better but Formidable doesnt use it.
 	// add_action( 'login_head', __NAMESPACE__.'\signon_link_styles' );
+	add_filter( 'authenticate', __NAMESPACE__.'\authenticate_link', 19, 3 );// normal password checks are on 20, cookie is on 30.  Run inbetween to intercept password logins but not cookie
 
 	add_action( 'after_setup_theme', __NAMESPACE__.'\signon' );
 }
 
+function authenticate_link( $user, $username, $password ) {
+	if ( $user instanceof WP_User ) return $user;
+	if ( empty( $username ) || !empty( $password ) ) return $user;
+	$user = get_user_by( 'login', $username );
+}
+
 function signon() {
-	if ( !empty( $_GET['mnml2fakey'] ) ) {
+	if ( !empty( $_GET['mnml2fal'] ) || !empty( $_POST['mnml2fac'] ) ) {
 		$creds = [ 'user_login' => '', 'user_password' => '', 'remember' => false ];
-		if ( !empty( $_GET['rm'] ) ) {
+		if ( !empty( $_REQUEST['rm'] ) ) {
 			$creds['remember'] = true;
 		}
 		$user = wp_signon( $creds );
@@ -52,18 +59,27 @@ function api_send_link( $request ) {
 	$user = get_user_by('login', $data['log'] );
 	
 	if ( ! $user && strpos( $data['log'], '@' ) ) {
-		$data['log'] = sanitize_user( wp_unslash( $data['log'] ) );// this is done before the login check as well on ligon.php but get_user_by sanitizes for 'login' case... see https://github.com/WordPress/wordpress-develop/blob/847328068d8d5fef10cd76df635fafd6b47556d9/src/wp-login.php#L1214
+		$data['log'] = sanitize_user( wp_unslash( $data['log'] ) );// this is done before the login check as well on login.php but get_user_by sanitizes for 'login' case... see https://github.com/WordPress/wordpress-develop/blob/847328068d8d5fef10cd76df635fafd6b47556d9/src/wp-login.php#L1214
 		$user = get_user_by( 'email', $data['log'] );
 	}
 
 	if ( ! $user ) 	return "Check your email for the sign in link!";// Dont want to admit the user doesnt esists
 
-	$key = bin2hex( random_bytes(16) );// 2nd code hidden in the code form, to make it even more impossible
-	
-	$link = esc_url( site_url( 'wp-login.php' ) ) . "?mnml2fakey={$key}";
+	// $settings = (object) get_option( 'mnml2fa', array() );
+
+	$key = bin2hex( random_bytes(16) );
+	$code = sprintf( "%06s", random_int(0, 999999) );// six digit code
+
+	$link = esc_url( site_url( 'wp-login.php' ) ) . "?mnml2fal={$key}";
 	if ( !empty( $data['rememberme'] ) ) $link .= "&rm=1";
 	$subject = "Your sign-in link";
-	$body = "<a href='{$link}'>click to sign in!</a>";// default
+	$body = "<a href='{$link}'>click to sign in</a>";// default
+	if ( $data['mnml2fak'] ) {
+		$code_key = filter_var( $data['mnml2fak'], FILTER_SANITIZE_NUMBER_INT );
+		if ( strlen( $code_key ) < 9 ) return "code key was weird";
+		$body .= " or enter code {$code}";
+		set_transient( "mnml2fa_{$code}{$code_key}", $user->ID, 300 );
+	}
 	$headers = ['Content-Type: text/html;'];
 	$email = $user->data->user_email;// $user->get('user_email')
 
@@ -88,28 +104,60 @@ function api_send_link( $request ) {
 
 function get_link_button() {
 
+	$settings = (object) get_option( 'mnml2fa', array() );
+
+	// $key = bin2hex( random_bytes(16) );// 2nd code hidden in the code form, to make it even more impossible
 	// echo "<div style='display:flex;align-items:center'><div style='height:1px;width:50%;background:currentColor'></div><div style='padding:1ex'>OR</div><div style='height:1px;width:50%;background:currentColor'></div></div>";
 	?>
-	<button id=mnml-magic-link>Get Sign-on Link</button>
-	<script>
-		// document.querySelector('#mnml-magic-link').onclick = e => {
-		document.querySelector('form').addEventListener( 'submit', e => {
-			e.preventDefault();
-			var f = new FormData(e.target);
-			if ( f.get('log') )
-			fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',body: f }).then(r=>{return r.json()}).then(r=>{e.target.innerText=r});
-			// var log = document.querySelector('[name=log]').value;
-			// if ( log )
-			// fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"log":"'+log+'"}'}).then(r=>{return r.json()}).then(r=>{e.target.innerText=r});
+	<input type="hidden" name="mnml2fak" id=mnml2fak />
+	<div id="mnml2fa-code-sent">
+		<p><label>Check your email for the auto-signin link
+		<?php if ( !empty($settings->code_with_magic_link) ) : ?>
+		<br>or enter the security code:</label>
+		<input type="number" name="mnml2fac" id="mnml2fac" class="input" size="20"  autocomplete="off"></p>
+		<button id=mnml-code-submit class="button button-primary button-large">Submit Code</button>
+		<?php endif; ?>
+	</div>
 
-		});
-	</script>
+	<button id=mnml-magic-link class="button button-primary button-large">Get Sign-on Link</button>
+	<script>// document.querySelector('#mnml-magic-link').onclick = e => {
+	document.querySelector('#user_pass').required=false;
+	document.querySelector('#mnml2fak').value=Math.random();
+	document.querySelector('form').addEventListener('submit', e => {
+		var f = new FormData(e.target);
+		if ( f.get('mnml2fac') ) {
+			
+		} else if ( f.get('log') ) {
+			e.preventDefault();
+			fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',body: f }).then(r=>{return r.json()}).then(r=>{
+				e.target.classList.add('link-sent');
+				e.target.action='';
+				document.querySelector('#mnml2fac').focus();
+			});
+		}
+		// var log = document.querySelector('[name=log]').value;
+		// if ( log )
+		// fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"log":"'+log+'"}'}).then(r=>{return r.json()}).then(r=>{e.target.innerText=r});
+	});</script>
 	<?php
 
 }
  
 function signon_link_styles() {
-	echo "<style>.login-password, [name=wp-submit], .user-pass-wrap { display: none !important; }</style>";
+	?><style>
+	.login-password,
+	[name=wp-submit],
+	.user-pass-wrap,
+	#mnml2fa-code-sent,
+	form.link-sent #mnml-magic-link,
+	form.link-sent #user_login,
+	form.link-sent [for=user_login] {
+		display: none !important;
+	}
+	form.link-sent #mnml2fa-code-sent {
+		display: unset !important;
+	}
+	</style><?php
 }
 
 
@@ -126,7 +174,8 @@ function authenticate( $user, $user_name ) {
 		$settings = (object) get_option( 'mnml2fa', array() );
 		
 		$code = sprintf( "%06s", random_int(0, 999999) );// six digit code
-		$key = bin2hex( random_bytes(16) );// 2nd code hidden in the code form, to make it even more impossible
+		// $key = bin2hex( random_bytes(16) );// 2nd code hidden in the code form, to make it even more impossible
+		$key = random_int((int)1e16, (int)1e20);
 		
 		$sent = false;
 		if ( function_exists(__NAMESPACE__.'\send_via_twilio') && $phone = get_user_meta( $user->ID, 'mnml2fano', true ) ) {
@@ -163,14 +212,18 @@ function authenticate( $user, $user_name ) {
 			error_log("not sent");
 		}
 	}
-	elseif ( !empty( $_POST['mnml2facode'] ) && !empty( $_POST['mnml2fakey'] ) )
+	elseif ( !empty( $_POST['mnml2fac'] )  && !empty( $_POST['mnml2fak'] ) )
 	{
+		$code_key = filter_var( $_POST['mnml2fak'], FILTER_SANITIZE_NUMBER_INT );
+		if ( strlen( $code_key ) < 9 ) return "code key was weird";
+
 		$settings = (object) get_option( 'mnml2fa', array() );
 		
-		$user_id = get_transient("mnml2fa_{$_POST['mnml2facode']}{$_POST['mnml2fakey']}");
+		// $user_id = get_transient("mnml2fa_{$_POST['mnml2fac']}{$_POST['mnml2fak']}");
+		$user_id = get_transient("mnml2fa_{$_POST['mnml2fac']}{$code_key}");
 		
 		if ( ! $user_id ) {
-			error_log("transient did not exist for code {$_POST['mnml2facode']} key {$_POST['mnml2fakey']}");
+			error_log("transient did not exist for code {$_POST['mnml2fac']}");
 			return new \WP_Error( 'invalid_code', 'The security code was invalid or expired.  Please try again.' );
 		} else {
 			$user = get_user_by('id', $user_id);
@@ -181,14 +234,14 @@ function authenticate( $user, $user_name ) {
 			}
 		}
 	}
-	elseif ( !empty( $_GET['mnml2fakey'] ) )// Magic Link
+	elseif ( !empty( $_GET['mnml2fal'] ) )// Magic Link
 	{
 		$settings = (object) get_option( 'mnml2fa', array() );
 		
-		$user_id = get_transient("mnml2fa_{$_GET['mnml2fakey']}");
+		$user_id = get_transient("mnml2fa_{$_GET['mnml2fal']}");
 		
 		if ( ! $user_id ) {
-			error_log("transient did not exist for code key {$_GET['mnml2fakey']}");
+			error_log("transient did not exist for code key {$_GET['mnml2fal']}");
 			return new \WP_Error( 'invalid_link', 'The link was expired.  Please try again.' );
 		} else {
 			$user = get_user_by('id', $user_id);
@@ -231,12 +284,12 @@ function login_form(){
 	login_header( 'New Device Authentication', '<p class="message">A code was just sent to your security device.  Please enter it to continue.</p>' );
 	
 	?>
-	<style>#mnml2facode::-webkit-inner-spin-button{display:none}</style>
+	<style>#mnml2fac::-webkit-inner-spin-button{display:none}</style>
 	<form name="2fa" id="2fa" action="<?php echo esc_url( network_site_url( 'wp-login.php', 'login_post' ) ); ?>" method="post">
-		<input type="hidden" name="mnml2fakey" value="<?php echo $key; ?>" />
+		<input type="hidden" name="mnml2fak" value="<?php echo $key; ?>" />
 		<input type="hidden" name="redirect_to" value="<?php echo esc_attr( $redirect_to ); ?>" />
 		<p>
-			<input type="number" name="mnml2facode" id="mnml2facode" class="input" size="20"  autocomplete="off" />
+			<input type="number" name="mnml2fac" id="mnml2fac" class="input" size="20"  autocomplete="off" />
 		</p>
 		<p class="forgetmenot">
 			<input name="rememberme" type="checkbox" id="rememberme" value="forever" <?php checked( $rememberme ); ?> /> <label for="rememberme"><?php esc_html_e( 'Remember Me' ); ?></label>
@@ -287,7 +340,7 @@ function add_settings_link( $links, $file ) {
 function settings_page() {
 
 	$fields = array_fill_keys([
-		'auto_login_link',
+		'auto_login_link','code_with_magic_link',
 		'email_subject', 'email_body',
 		'sms_message',
 		'no_login_alerts',
@@ -296,6 +349,8 @@ function settings_page() {
 	[ 'type' => 'text' ]);// default
 
 	$fields['auto_login_link']['type'] = 'checkbox';
+	$fields['code_with_magic_link']['type'] = 'checkbox';
+	$fields['code_with_magic_link']['show'] = 'auto_login_link';
 	$fields['email_body']['type'] = $fields['sms_message']['type'] = 'textarea';
 	$fields['email_body']['placeholder'] = $fields['sms_message']['placeholder'] = $fields['email_subject']['placeholder'] = 'Your security code is %code%';
 	$fields['no_login_alerts']['type'] = 'checkbox';
