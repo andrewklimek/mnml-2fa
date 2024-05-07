@@ -2,7 +2,10 @@
 namespace mnml2fa;
 defined('ABSPATH') || exit;
 
-function send_via_twilio( $phone, $code ) {
+function send_via_twilio( $phone, $code='', $link='' ) {
+
+	$phone = apply_filters( 'mnml2fa_phone_number', $phone );
+	if ( ! $phone ) return false;
 
 	$settings = get_option( 'mnml2fa' );
 
@@ -12,11 +15,25 @@ function send_via_twilio( $phone, $code ) {
 	$pass = $settings['twilio_api_secret'];// API Secret
 	$from = $settings['twilio_from'];// from can just be a text string somehow... not in the US though.  See https://www.twilio.com/docs/sms/send-messages#use-an-alphanumeric-sender-id
 	$to = "+" . $phone;
-	$body = "Your security code is $code";// default
-	if ( !empty($settings['sms_message']) ) {
-		$body = str_ireplace( '%code%', $code, $settings['email_body'], $n );
-		if (0===$n) $body .= " $code";// add the code on the end if they didn't use the %code% merge tag in their message
+
+	$body_c = $body_l = '';
+
+	if ( $code ) {
+		$body_c = "Your security code is $code";// default
+		if ( !empty($settings['code_sms_message']) ) {
+			$body_c = str_ireplace( '%code%', $code, $settings['code_sms_message'], $n );
+			if (0===$n) $body_c .= " $code";// add the code on the end if they didn't use the %code% merge tag in their message
+		}
 	}
+	if ( $link ) {
+		$body_l = "Click to sign in: $link";// default
+		if ( !empty($settings['link_sms_message']) ) {
+			$body_l = str_ireplace( '%link%', $link, $settings['link_sms_message'], $n );
+			if (0===$n) $body_l .= " $link";// add the code on the end if they didn't use the %code% merge tag in their message
+		}
+		if ( $body_c ) $body_l = " OR " . lcfirst( $body_l );
+	}
+	$body = $body_c . $body_l;
 
 	// https://www.php.net/manual/en/function.curl-setopt.php
 	// https://github.com/twilio/twilio-php/blob/main/src/Twilio/Http/CurlClient.php
@@ -66,7 +83,10 @@ function usermeta_form_field_update( $user_id ) {
 	if ( ! current_user_can( 'edit_user', $user_id ) ) return false;
 	// $number = ltrim( filter_input( INPUT_POST, "mnml2fano", FILTER_SANITIZE_NUMBER_INT ), '+' );
 	if ( isset( $_POST['mnml2fano'] ) ) {// not sure if its ever not set
-		return update_user_meta( $user_id, 'mnml2fano', preg_replace('/\D/', '', $_POST['mnml2fano'] ) );
+		if ( $_POST['mnml2fano'] ) 
+			return update_user_meta( $user_id, 'mnml2fano', preg_replace('/\D/', '', $_POST['mnml2fano'] ) );
+		else
+			return delete_user_meta( $user_id, 'mnml2fano' );
 	}
 	return;
 }

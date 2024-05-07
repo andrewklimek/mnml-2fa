@@ -4,7 +4,7 @@ namespace mnml2fa;
  * Plugin Name: Mnml Two-Factor Authentication
  * Plugin URI:  https://github.com/andrewklimek/mnml-2fa
  * Description: 2-factor authentication on the native login form.  Email and SMS via Twilio
- * Version:     1.2
+ * Version:     1.3
  * Author:      Andrew Klimek
  * Author URI:  https://github.com/andrewklimek
  * License:     GPLv2 or later
@@ -21,7 +21,7 @@ add_action( 'login_form_2fa', __NAMESPACE__.'\login_form' );
 add_filter( 'authenticate', __NAMESPACE__.'\authenticate', 21, 2 );// normal password checks are on 20, cookie is on 30.  Run inbetween to intercept password logins but not cookie
 // authenticate filter https://github.com/WordPress/WordPress/blob/c6028577a462f235da67e5d3dcf1dc42f9a96669/wp-includes/pluggable.php#L575
 
-if ( !empty($settings->auto_login_link) ) {
+if ( !empty($settings->type) && $settings->type == 'link' ) {
 	add_action( 'login_form', __NAMESPACE__.'\get_link_button' );
 	add_action( 'login_form', __NAMESPACE__.'\signon_link_styles', 0 );
 	// this would be better but Formidable doesnt use it.
@@ -53,52 +53,69 @@ function register_api_endpoint() {
 }
 
 function api_send_link( $request ) {
-	$data = $request->get_params();
-	// error_log( var_export($data, 1));
-	if ( empty( $data['log'] ) ) return '';
-	$user = get_user_by('login', $data['log'] );
-	
-	if ( ! $user && strpos( $data['log'], '@' ) ) {
-		$data['log'] = sanitize_user( wp_unslash( $data['log'] ) );// this is done before the login check as well on login.php but get_user_by sanitizes for 'login' case... see https://github.com/WordPress/wordpress-develop/blob/847328068d8d5fef10cd76df635fafd6b47556d9/src/wp-login.php#L1214
-		$user = get_user_by( 'email', $data['log'] );
+
+	if ( empty( $request['mnml2falog'] ) ) return '';
+
+	$settings = (object) get_option( 'mnml2fa', array() );
+
+	$user = false;
+
+	if ( strpos( $request['mnml2falog'], '@' ) ) {
+		$request['mnml2falog'] = sanitize_user( wp_unslash( $request['mnml2falog'] ) );// this is done before the login check as well on ligon.php but get_user_by sanitizes for 'login' case... see https://github.com/WordPress/wordpress-develop/blob/847328068d8d5fef10cd76df635fafd6b47556d9/src/wp-login.php#L1214
+		$user = get_user_by( 'email', $request['mnml2falog'] );
+	} elseif ( function_exists(__NAMESPACE__.'\send_via_twilio') ) {
+		$maybe_tel = preg_replace( '/\D/', '', $request['mnml2falog'] );
+		if ( strlen( $maybe_tel ) > 8 ) {
+			$user = apply_filters( 'mnml2fa_get_user_by_tele', null, $maybe_tel );// $maybe_tel is sanitized already to digits only
+			if ( $user === null ) {
+				$meta_key = $settings->telephone_user_meta ?? 'mnml2fano';
+				$users = get_users( [ 'meta_key' => $meta_key, 'meta_value' => $maybe_tel, 'number' => 2 ] );
+				if ( count( $users ) > 1 ) {
+					error_log("two accounts have the same phone number trying to login: $maybe_tel");
+				}
+				$user = current( $users );
+			}
+			if ( $user ) $tel = $maybe_tel;// confirm this is a telephone number for use below to flag trigger of sms
+		}
 	}
 
-	if ( ! $user ) 	return "Check your email for the sign in link!";// Dont want to admit the user doesnt esists
+	if ( ! $user ) $user = get_user_by('login', $request['mnml2falog'] );
 
-	// $settings = (object) get_option( 'mnml2fa', array() );
+	if ( ! $user ) return "Check your email for the sign in link!";// Dont want to admit the user doesnt esists
 
 	$key = bin2hex( random_bytes(16) );
-	$code = sprintf( "%06s", random_int(0, 999999) );// six digit code
-
+	
 	$link = esc_url( site_url( 'wp-login.php' ) ) . "?mnml2fal={$key}";
-	if ( !empty( $data['rememberme'] ) ) $link .= "&rm=1";
-	$subject = "Your sign-in link";
-	$body = "<a href='{$link}'>click to sign in</a>";// default
-	if ( $data['mnml2fak'] ) {
-		$code_key = filter_var( $data['mnml2fak'], FILTER_SANITIZE_NUMBER_INT );
+	if ( !empty( $request['rememberme'] ) ) $link .= "&rm=1";
+	
+	$code = false;
+	// if ( !empty( $request['mnml2fak'] ) ) {
+	if ( !empty( $settings->code_with_magic_link ) ) {
+		$code_key = filter_var( $request['mnml2fak'], FILTER_SANITIZE_NUMBER_INT );
 		if ( strlen( $code_key ) < 9 ) return "code key was weird";
-		$body .= " or enter code {$code}";
+		$code = sprintf( "%06s", random_int(0, 999999) );// six digit code
 		set_transient( "mnml2fa_{$code}{$code_key}", $user->ID, 300 );
 	}
-	$headers = ['Content-Type: text/html;'];
-	$email = $user->data->user_email;// $user->get('user_email')
 
-	// get custom text
-	
-	// if ( !empty($settings->email_subject) ) {
-	// 	$subject = str_ireplace( '%code%', $code, $settings->email_subject );
-	// }
-	// if ( !empty($settings->email_body) ) {
-	// 	$body = str_ireplace( '%code%', $code, $settings->email_body, $n );
-	// 	if (0===$n) $body .= " $code";// add the code on the end if they didn't use the %code% merge tag in their message
-	// }
-	$sent = wp_mail( $email, $subject, $body, $headers );
-
+	if ( !empty( $tel ) ) {
+		$sent = send_via_twilio( $tel, $code, $link );
+		if ( $sent ) $return = "Check your phone for the sign in link!";
+	}
+	if ( empty( $sent ) ) {
+		$email = $user->user_email;// $user->get('user_email')
+		$subject = $settings->link_email_subject ?? "Your sign-in link";
+		$body = $settings->link_email_body ?? "Hello %name%, here is the sign-in link you requested";
+		$name = " ". $user->first_name ?? " ". $user->display_name ?? "";
+		$body = str_ireplace( [" %name%", "%name%" ], $name, $body );// handle the space this way in case of missing name, so you dont have the famous "Hello ,"
+		$body = add_markup_to_emails( $body, $code, $link );
+		$sent = wp_mail( $email, $subject, $body, 'Content-Type: text/html;' );
+		if ( $sent ) $return = "Check your email for the sign in link!";
+	}
 	if ( ! $sent ) {
 		return "problem sending";
 	}
 	set_transient( "mnml2fa_{$key}", $user->ID, 300 );
-	return "Check your email for the sign in link!";
+	return $return;
 }
 
 
@@ -109,31 +126,36 @@ function get_link_button() {
 	// $key = bin2hex( random_bytes(16) );// 2nd code hidden in the code form, to make it even more impossible
 	// echo "<div style='display:flex;align-items:center'><div style='height:1px;width:50%;background:currentColor'></div><div style='padding:1ex'>OR</div><div style='height:1px;width:50%;background:currentColor'></div></div>";
 	?>
+	<p>
+		<label for="mnml2falog">Email Address<?php if ( function_exists(__NAMESPACE__.'\send_via_twilio') ) echo " or Phone Number"; ?></label>
+		<input type="text" name="mnml2falog" id="mnml2falog" class="input" size="20" autocapitalize="off" autocomplete="email<?php if ( function_exists(__NAMESPACE__.'\send_via_twilio') ) echo " tel"; ?>" required="required" />
+	</p>
 	<input type="hidden" name="mnml2fak" id=mnml2fak />
+	
 	<div id="mnml2fa-code-sent">
-		<p><label>Check your email for the auto-signin link
+		<p><label>Check your email for the auto-login link
 		<?php if ( !empty($settings->code_with_magic_link) ) : ?>
 		<br>or enter the security code:</label>
 		<input type="number" name="mnml2fac" id="mnml2fac" class="input" size="20"  autocomplete="off"></p>
-		<button id=mnml-code-submit class="button button-primary button-large">Submit Code</button>
+		<button id=mnml-code-submit class="button button-primary button-large" formnovalidate>Submit Code</button>
 		<?php endif; ?>
 	</div>
 
-	<button id=mnml-magic-link class="button button-primary button-large">Get Sign-on Link</button>
-	<script>// document.querySelector('#mnml-magic-link').onclick = e => {
-	document.querySelector('#user_pass').required=false;
+	<button id=mnml-magic-link formnovalidate>Get Sign-on Link</button>
+	<script>
+	//document.querySelector('#mnml-magic-link').closest('form').querySelectorAll('[required]').forEach(e=>{if(e.id!='mnml2falog')e.required=0});
 	document.querySelector('#mnml2fak').value=Math.random();
-	document.querySelector('form').addEventListener('submit', e => {
+	document.querySelector('form').addEventListener( 'submit', e => {
 		var f = new FormData(e.target);
-		if ( f.get('mnml2fac') ) {
-			
-		} else if ( f.get('log') ) {
+		if ( ! f.get('mnml2fac') ) {
 			e.preventDefault();
-			fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',body: f }).then(r=>{return r.json()}).then(r=>{
-				e.target.classList.add('link-sent');
-				e.target.action='';
-				document.querySelector('#mnml2fac').focus();
-			});
+			if ( f.get('mnml2falog') ) {
+				fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',body: f }).then(r=>{return r.json()}).then(r=>{
+					e.target.classList.add('link-sent');
+					// e.target.action='';
+					document.querySelector('#mnml2fac').focus();
+				});
+			}
 		}
 		// var log = document.querySelector('[name=log]').value;
 		// if ( log )
@@ -144,14 +166,17 @@ function get_link_button() {
 }
  
 function signon_link_styles() {
+	// first line of selectors is for Formidable's login form
 	?><style>
-	.login-password,
+	.login-password, .login-username, form.link-sent .login-remember,
+	label[for=user_login], input#user_login,
 	[name=wp-submit],
 	.user-pass-wrap,
 	#mnml2fa-code-sent,
 	form.link-sent #mnml-magic-link,
-	form.link-sent #user_login,
-	form.link-sent [for=user_login] {
+	form.link-sent #mnml2falog,
+	form.link-sent .forgetmenot,
+	form.link-sent [for=mnml2falog] {
 		display: none !important;
 	}
 	form.link-sent #mnml2fa-code-sent {
@@ -169,7 +194,7 @@ function authenticate( $user, $user_name ) {
 
 		if ( ! $user->has_cap('administrator') ) return $user;
 		
-		// if ( $_SERVER['REMOTE_ADDR'] === '76.73.242.188' ) return $user;
+		// if ( $_SERVER['REMOTE_ADDR'] === 'IPADDRESS' ) return $user;
 		
 		$settings = (object) get_option( 'mnml2fa', array() );
 		
@@ -178,28 +203,33 @@ function authenticate( $user, $user_name ) {
 		$key = random_int((int)1e16, (int)1e20);
 		
 		$sent = false;
-		if ( function_exists(__NAMESPACE__.'\send_via_twilio') && $phone = get_user_meta( $user->ID, 'mnml2fano', true ) ) {
-			$sent = send_via_twilio( $phone, $code );
+		if ( function_exists(__NAMESPACE__.'\send_via_twilio') ) {
+
+			$phone = apply_filters( 'mnml2fa_get_tele_by_user', null, $user );
+			if ( $phone === null ) {
+				$meta_key = $settings->telephone_user_meta ?? 'mnml2fano';
+				$phone = get_user_meta( $user->ID, $meta_key, true );
+			}
+			if ( $phone ) $sent = send_via_twilio( $phone, $code );
 		}
 		if ( ! $sent ) {
 
-			$email = $user->data->user_email;// $user->get('user_email')
+			$email = $user->user_email;// $user->get('user_email')
 			if ( ! $email ) {
 				error_log("no email in mnml2fa");
 				exit;
 			}
 			
-			$subject = $body = "Your security code is $code";// default
-			// get custom text
-			
-			if ( !empty($settings->email_subject) ) {
-				$subject = str_ireplace( '%code%', $code, $settings->email_subject );
-			}
-			if ( !empty($settings->email_body) ) {
-				$body = str_ireplace( '%code%', $code, $settings->email_body, $n );
-				if (0===$n) $body .= " $code";// add the code on the end if they didn't use the %code% merge tag in their message
-			}
-			$sent = wp_mail( $email, $subject, $body );
+			$subject = $settings->code_email_subject ?? "Your security code is %code%";
+			$subject = str_ireplace( '%code%', $code, $subject );
+
+			$body = $settings->link_email_body ?? "Hello %name%, here is the security code you requested";
+			$name = " ". $user->first_name ?? " ". $user->display_name ?? "";
+			$body = str_ireplace( [" %name%", "%name%" ], $name, $body );// handle the space this way in case of missing name, so you dont have the famous "Hello ,"
+
+			$body = add_markup_to_emails( $body, $code );
+
+			$sent = wp_mail( $email, $subject, $body, 'Content-Type: text/html;' );
 		}
 
 		if ( $sent ) {
@@ -212,7 +242,7 @@ function authenticate( $user, $user_name ) {
 			error_log("not sent");
 		}
 	}
-	elseif ( !empty( $_POST['mnml2fac'] )  && !empty( $_POST['mnml2fak'] ) )
+	elseif ( !empty( $_POST['mnml2fac'] ) && !empty( $_POST['mnml2fak'] ) )
 	{
 		$code_key = filter_var( $_POST['mnml2fak'], FILTER_SANITIZE_NUMBER_INT );
 		if ( strlen( $code_key ) < 9 ) return "code key was weird";
@@ -227,10 +257,10 @@ function authenticate( $user, $user_name ) {
 			return new \WP_Error( 'invalid_code', 'The security code was invalid or expired.  Please try again.' );
 		} else {
 			$user = get_user_by('id', $user_id);
-			// error_log( "logged in user {$user->data->user_login} from IP {$_SERVER['REMOTE_ADDR']}");
+			// error_log( "logged in user {$user->user_login} from IP {$_SERVER['REMOTE_ADDR']}");
 			if ( empty($settings->no_login_alerts ) ) {
 				$message = "New login from IP {$_SERVER['REMOTE_ADDR']}";
-				wp_mail( $user->data->user_email, $message, $message . "\n\nuser agent: {$_SERVER['HTTP_USER_AGENT']}" );
+				wp_mail( $user->user_email, $message, $message . "\n\nuser agent: {$_SERVER['HTTP_USER_AGENT']}" );
 			}
 		}
 	}
@@ -245,10 +275,10 @@ function authenticate( $user, $user_name ) {
 			return new \WP_Error( 'invalid_link', 'The link was expired.  Please try again.' );
 		} else {
 			$user = get_user_by('id', $user_id);
-			// error_log( "logged in user {$user->data->user_login} from IP {$_SERVER['REMOTE_ADDR']}");
+			// error_log( "logged in user {$user->user_login} from IP {$_SERVER['REMOTE_ADDR']}");
 			if ( empty($settings->no_login_alerts ) ) {
 				$message = "New login from IP {$_SERVER['REMOTE_ADDR']}";
-				wp_mail( $user->data->user_email, $message, $message . "\n\nuser agent: {$_SERVER['HTTP_USER_AGENT']}" );
+				wp_mail( $user->user_email, $message, $message . "\n\nuser agent: {$_SERVER['HTTP_USER_AGENT']}" );
 			}
 		}
 	}
@@ -340,19 +370,41 @@ function add_settings_link( $links, $file ) {
 function settings_page() {
 
 	$fields = array_fill_keys([
-		'auto_login_link','code_with_magic_link',
-		'email_subject', 'email_body',
-		'sms_message',
+		'type',
 		'no_login_alerts',
+		'code_settings',
+		'code_email_subject',
+		'code_email_body',
+		'code_sms_message',
+		'code_settings_end',
+		'link_settings',
+		'code_with_magic_link',
+		'link_email_subject',
+		'link_email_body',
+		'link_button_text','link_button_color',
+		'link_sms_message',
+		'link_settings_end',
 		'twilio_account_sid', 'twilio_api_sid', 'twilio_api_secret', 'twilio_from',
+		'telephone_user_meta',
 	],
 	[ 'type' => 'text' ]);// default
 
-	$fields['auto_login_link']['type'] = 'checkbox';
+	$fields['code_settings'] = ['type' => 'section', 'show' => ['type' => 'code'] ];
+	$fields['code_settings_end'] = ['type' => 'section_end'];
+	$fields['link_settings'] = ['type' => 'section', 'show' => ['type' => 'link'] ];
+	$fields['link_settings_end'] = ['type' => 'section_end'];
+
+	$fields['type'] = [ 'type' => 'radio', 'options' => ['code','link']];
 	$fields['code_with_magic_link']['type'] = 'checkbox';
-	$fields['code_with_magic_link']['show'] = 'auto_login_link';
-	$fields['email_body']['type'] = $fields['sms_message']['type'] = 'textarea';
-	$fields['email_body']['placeholder'] = $fields['sms_message']['placeholder'] = $fields['email_subject']['placeholder'] = 'Your security code is %code%';
+	$fields['code_email_body']['type'] = $fields['link_email_body']['type'] = $fields['code_sms_message']['type'] = $fields['link_sms_message']['type'] = 'textarea';
+	$fields['code_email_body']['placeholder'] = "Hello %name%, here is the security code you requested";
+	$fields['code_email_subject']['placeholder'] = 'Your security code is %code%';
+	$fields['code_sms_message']['placeholder'] = 'Your security code is %code%';
+	$fields['link_email_subject']['placeholder'] = 'Your sign-in link';
+	$fields['link_email_body']['placeholder'] = 'Hello %name%, here is the sign-in link you requested';
+	$fields['link_button_text']['placeholder'] = 'Sign In';
+	$fields['link_button_color']['placeholder'] = '#777777';
+	$fields['link_sms_message']['placeholder'] = 'Click to sign in: %link%';
 	$fields['no_login_alerts']['type'] = 'checkbox';
 	$fields['no_login_alerts']['desc'] = 'Disable new login alert emails';
 	$fields['twilio_account_sid']['before'] = "<h3>Twilio settings for SMS codes instead of email</h3>";
@@ -366,4 +418,87 @@ function settings_page() {
 	$endpoint = rest_url(__NAMESPACE__.'/v1/settings');
 	$title = "2FA Settings";
 	require( __DIR__.'/settings-page.php' );// needs $options, $endpoint, $title
+}
+
+
+function add_markup_to_emails( $message, $code='', $link='' ) {
+
+	$settings = (object) get_option( 'mnml2fa', array() );
+
+	if ( strpos( $message, "<p" ) === false && strpos( $message, "<br" ) === false ) {
+		$message = str_replace( "\n", "<br>",  $message );
+	}
+	
+	$concern = "If you did not just try to login, someone knows or has guessed your ";
+	$concern .= $link ? "login, but they cannot login without this link." : "password, but they cannot login without this code.";
+
+	// if ( substr( $message, 0, 9 ) === "<!DOCTYPE" ) {
+	// 	error_log("matched <!DOCTYPE");
+	// 	return $message;
+	// } elseif ( strpos( substr( $message, 0, 200 ), "<html" ) ) {
+	// 	error_log("matched <html");
+	// 	return $message;
+	// }
+
+	ob_start();
+	?>
+	<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+	<meta charset="UTF-8">
+	<meta content="width=device-width, initial-scale=1" name="viewport">
+	<meta name="x-apple-disable-message-reformatting">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<!--[if gte mso 9]><xml>
+	<o:OfficeDocumentSettings>
+	<o:AllowPNG/>
+	<o:PixelsPerInch>96</o:PixelsPerInch>
+	</o:OfficeDocumentSettings>
+</xml><![endif]-->
+<style type="text/css">
+	@media only screen and (max-width: 600px) {
+		table {
+			width: 100% !important;
+		}
+	}
+</style>
+</head>
+<body style="width:100%;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;font-family:sans-serif;line-height:1.5;padding:0;margin:0;background-color:#F6F6F6;">
+	<table style="border-collapse:collapse;border-spacing:0px;width:100%;height:100%;background-color:#F6F6F6" cellspacing="0" cellpadding="0">
+		<tr style="border-collapse:collapse;">
+			<td style="padding:24px;" align="center">
+				<table style="background-color:#ffffff;width:600px;" cellspacing="0" cellpadding="0">
+					<tr style="border-collapse:collapse;">
+						<td style="padding:24px;text-align:center;font-size:16px">
+							<?php
+							echo $message;
+							if ( $link ) {
+								$button_text = $settings->link_button_text ?? "Sign In";
+								$button_color = $settings->link_button_color ?? "#777";
+								echo "<p style='margin:36px;'><a href='{$link}' style='background:{$button_color};padding:12px 16px;color:#fff;text-decoration:none;font-weight:700;'>{$button_text}</a></p>";
+								if ( $code ) {
+									echo "<p>or enter this code on the open login page:</p>";
+								}
+							}
+							if ( $code ) {
+								echo "<p style='font-size:36px;letter-spacing:6px;margin:24px;'>{$code}</p>";
+							}
+							echo "<p style='font-size:13px;'>{$concern}</p>";
+							?>
+						</td>
+					</tr>
+				</table>
+			</td>
+		</tr>
+		<tr style="border-collapse:collapse;">
+			<td style="text-align:center;padding: 0 0 48px;">
+				<p><a href="<?php echo get_option('home'); ?>"><?php echo get_option('blogname'); ?></a></p>
+			</td>
+		</tr>
+	</table>
+</body>
+</html>
+<?php
+
+	return ob_get_clean();
 }
