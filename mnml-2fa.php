@@ -319,7 +319,7 @@ function login_form(){
 		<input type="hidden" name="mnml2fak" value="<?php echo $key; ?>" />
 		<input type="hidden" name="redirect_to" value="<?php echo esc_attr( $redirect_to ); ?>" />
 		<p>
-			<input type="number" name="mnml2fac" id="mnml2fac" class="input" size="20"  autocomplete="off" />
+			<input type="number" name="mnml2fac" id="mnml2fac" class="input" size="20"  autocomplete="off" autofocus />
 		</p>
 		<p class="forgetmenot">
 			<input name="rememberme" type="checkbox" id="rememberme" value="forever" <?php checked( $rememberme ); ?> /> <label for="rememberme"><?php esc_html_e( 'Remember Me' ); ?></label>
