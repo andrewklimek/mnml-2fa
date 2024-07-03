@@ -4,7 +4,7 @@ namespace mnml2fa;
  * Plugin Name: Mnml Two-Factor Authentication
  * Plugin URI:  https://github.com/andrewklimek/mnml-2fa
  * Description: 2-factor authentication on the native login form.  Email and SMS via Twilio
- * Version:     1.3
+ * Version:     1.3.1
  * Author:      Andrew Klimek
  * Author URI:  https://github.com/andrewklimek
  * License:     GPLv2 or later
@@ -26,25 +26,39 @@ if ( !empty($settings->type) && $settings->type == 'link' ) {
 	add_action( 'login_form', __NAMESPACE__.'\signon_link_styles', 0 );
 	// this would be better but Formidable doesnt use it.
 	// add_action( 'login_head', __NAMESPACE__.'\signon_link_styles' );
-	add_filter( 'authenticate', __NAMESPACE__.'\authenticate_link', 19, 3 );// normal password checks are on 20, cookie is on 30.  Run inbetween to intercept password logins but not cookie
+	// add_filter( 'authenticate', __NAMESPACE__.'\authenticate_link', 19, 3 );// normal password checks are on 20, cookie is on 30.  Run inbetween to intercept password logins but not cookie
 
 	add_action( 'after_setup_theme', __NAMESPACE__.'\signon' );
 }
 
-function authenticate_link( $user, $username, $password ) {
-	if ( $user instanceof WP_User ) return $user;
-	if ( empty( $username ) || !empty( $password ) ) return $user;
-	$user = get_user_by( 'login', $username );
-}
+// this check was ruining the redirect on the portal but i dont really know why... might be something specific on that site
+add_filter('admin_email_check_interval', '__return_zero' );
+
+// function authenticate_link( $user, $username, $password ) {
+// 	if ( $user instanceof WP_User ) return $user;
+// 	if ( empty( $username ) || !empty( $password ) ) return $user;
+// 	$user = get_user_by( 'login', $username );
+// }
 
 function signon() {
-	if ( !empty( $_GET['mnml2fal'] ) || !empty( $_POST['mnml2fac'] ) ) {
-		$creds = [ 'user_login' => '', 'user_password' => '', 'remember' => false ];
-		if ( !empty( $_REQUEST['rm'] ) ) {
-			$creds['remember'] = true;
-		}
-		$user = wp_signon( $creds );
+	if ( empty( $_GET['tfal'] ) ) return;
+		
+	$login_data = get_transient("mnml2fa_{$_GET['tfal']}");
+	$login_data = (object) $login_data;
+	
+	if ( empty($login_data->id) ) return;
+
+	$creds = [ 'user_login' => '', 'user_password' => '', 'remember' => false ];
+	if ( !empty($login_data->rm) || !empty( $_REQUEST['rm'] ) ) {
+		$creds['remember'] = true;
 	}
+	$user = wp_signon( $creds );
+
+	if ( ! empty( $login_data->redirect ) ) {
+		wp_safe_redirect( $login_data->redirect );
+		exit;
+	}
+	// wp_safe_redirect( wp_login_url() );
 }
 
 add_action( 'rest_api_init', __NAMESPACE__ .'\register_api_endpoint' );
@@ -85,8 +99,18 @@ function api_send_link( $request ) {
 
 	$key = bin2hex( random_bytes(16) );
 	
-	$link = esc_url( site_url( 'wp-login.php' ) ) . "?mnml2fal={$key}";
-	if ( !empty( $request['rememberme'] ) ) $link .= "&rm=1";
+	$link = get_home_url() . "?tfal={$key}";
+	
+	$login_data = (object) [ 'id' => $user->ID, 'rm' => 0 ];
+
+	if ( !empty( $request['rememberme'] ) ) {
+		// $link .= "&rm=1";
+		$login_data->rm = 1;
+	}
+	if ( !empty( $request['redirect_to'] ) ) {
+		// $link .= "&rm=1";
+		$login_data->redirect = $_REQUEST['redirect_to'];
+	}
 	
 	$code = false;
 	// if ( !empty( $request['mnml2fak'] ) ) {
@@ -94,7 +118,7 @@ function api_send_link( $request ) {
 		$code_key = filter_var( $request['mnml2fak'], FILTER_SANITIZE_NUMBER_INT );
 		if ( strlen( $code_key ) < 9 ) return "code key was weird";
 		$code = sprintf( "%06s", random_int(0, 999999) );// six digit code
-		set_transient( "mnml2fa_{$code}{$code_key}", $user->ID, 300 );
+		set_transient( "mnml2fa_{$code}{$code_key}", $login_data, 300 );
 	}
 
 	if ( !empty( $tel ) ) {
@@ -114,7 +138,7 @@ function api_send_link( $request ) {
 	if ( ! $sent ) {
 		return "problem sending";
 	}
-	set_transient( "mnml2fa_{$key}", $user->ID, 300 );
+	set_transient( "mnml2fa_{$key}", $login_data, 300 );
 	return $return;
 }
 
@@ -233,7 +257,9 @@ function authenticate( $user, $user_name ) {
 		}
 
 		if ( $sent ) {
-			set_transient( "mnml2fa_{$code}{$key}", $user->ID, 300 );
+
+			$login_data = [ 'id' => $user->ID ];
+			set_transient( "mnml2fa_{$code}{$key}", $login_data, 300 );
 			$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? "&redirect_to=" . $_REQUEST['redirect_to'] : "";
 			$rememberme = ! empty( $_REQUEST['rememberme'] ) ? "&rm=1" : "";
 			wp_safe_redirect( "wp-login.php?action=2fa&k=" . $key . $rememberme . $redirect_to );
@@ -247,16 +273,18 @@ function authenticate( $user, $user_name ) {
 		$code_key = filter_var( $_POST['mnml2fak'], FILTER_SANITIZE_NUMBER_INT );
 		if ( strlen( $code_key ) < 9 ) return "code key was weird";
 
+		error_log( var_export( $_REQUEST, 1 ) );
+
 		$settings = (object) get_option( 'mnml2fa', array() );
 		
-		// $user_id = get_transient("mnml2fa_{$_POST['mnml2fac']}{$_POST['mnml2fak']}");
-		$user_id = get_transient("mnml2fa_{$_POST['mnml2fac']}{$code_key}");
+		$login_data = get_transient("mnml2fa_{$_POST['mnml2fac']}{$code_key}");
+		$login_data = (object) $login_data;
 		
-		if ( ! $user_id ) {
+		if ( empty($login_data->id) ) {
 			error_log("transient did not exist for code {$_POST['mnml2fac']}");
 			return new \WP_Error( 'invalid_code', 'The security code was invalid or expired.  Please try again.' );
 		} else {
-			$user = get_user_by('id', $user_id);
+			$user = get_user_by( 'id', $login_data->id );
 			// error_log( "logged in user {$user->user_login} from IP {$_SERVER['REMOTE_ADDR']}");
 			if ( empty($settings->no_login_alerts ) ) {
 				$message = "New login from IP {$_SERVER['REMOTE_ADDR']}";
@@ -264,17 +292,19 @@ function authenticate( $user, $user_name ) {
 			}
 		}
 	}
-	elseif ( !empty( $_GET['mnml2fal'] ) )// Magic Link
+	elseif ( !empty( $_GET['tfal'] ) )// Magic Link
 	{
 		$settings = (object) get_option( 'mnml2fa', array() );
 		
-		$user_id = get_transient("mnml2fa_{$_GET['mnml2fal']}");
+		$login_data = get_transient("mnml2fa_{$_GET['tfal']}");
+		$login_data = (object) $login_data;
 		
-		if ( ! $user_id ) {
-			error_log("transient did not exist for code key {$_GET['mnml2fal']}");
+		
+		if ( empty($login_data->id) ) {
+			error_log("transient did not exist for code key {$_GET['tfal']}");
 			return new \WP_Error( 'invalid_link', 'The link was expired.  Please try again.' );
 		} else {
-			$user = get_user_by('id', $user_id);
+			$user = get_user_by( 'id', $login_data->id );
 			// error_log( "logged in user {$user->user_login} from IP {$_SERVER['REMOTE_ADDR']}");
 			if ( empty($settings->no_login_alerts ) ) {
 				$message = "New login from IP {$_SERVER['REMOTE_ADDR']}";
