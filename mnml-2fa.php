@@ -57,6 +57,11 @@ function signon() {
 	
 	if ( empty($login_data->id) ) return;
 
+	if ( !empty( $login_data->ip ) && $login_data->ip !== $_SERVER['REMOTE_ADDR'] ) {
+		error_log("someone clicked magic link from mismatched IP");
+		return;
+	}
+
 	$creds = [ 'user_login' => '', 'user_password' => '', 'remember' => false ];
 	if ( !empty($login_data->rm) || !empty( $_REQUEST['rm'] ) ) {
 		$creds['remember'] = true;
@@ -115,12 +120,13 @@ function api_send_link( $request ) {
 	$login_data = (object) [ 'id' => $user->ID, 'rm' => 0 ];
 
 	if ( !empty( $request['rememberme'] ) ) {
-		// $link .= "&rm=1";
 		$login_data->rm = 1;
 	}
 	if ( !empty( $request['redirect_to'] ) ) {
-		// $link .= "&rm=1";
 		$login_data->redirect = $_REQUEST['redirect_to'];
+	}
+	if ( !empty( $_SERVER['REMOTE_ADDR'] ) ) {// TODO: this can be a proxy server IP... how to rule that out?
+		$login_data->ip = $_SERVER['REMOTE_ADDR'];
 	}
 	
 	$code = false;
