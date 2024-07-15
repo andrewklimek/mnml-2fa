@@ -24,11 +24,20 @@ add_filter( 'authenticate', __NAMESPACE__.'\authenticate', 21, 2 );// normal pas
 if ( !empty($settings->type) && $settings->type == 'link' ) {
 	add_action( 'login_form', __NAMESPACE__.'\get_link_button' );
 	add_action( 'login_form', __NAMESPACE__.'\signon_link_styles', 0 );
+	// the 'login_form' action is not called in wp_login_form() which can be used to insert a simple login form.  The 'login_form_middle' filter is used in that function.
+	add_filter( 'login_form_middle', __NAMESPACE__.'\wp_login_form_template', 10, 1 );
 	// this would be better but Formidable doesnt use it.
 	// add_action( 'login_head', __NAMESPACE__.'\signon_link_styles' );
-	// add_filter( 'authenticate', __NAMESPACE__.'\authenticate_link', 19, 3 );// normal password checks are on 20, cookie is on 30.  Run inbetween to intercept password logins but not cookie
+	// add_filter( 'authenticate', __NAMESPACE__.'\authenticate_link', 19, 3 );
 
 	add_action( 'after_setup_theme', __NAMESPACE__.'\signon' );
+}
+
+function wp_login_form_template($html){
+	ob_start();
+	signon_link_styles();
+	get_link_button();
+	return ob_get_clean();
 }
 
 // this check was ruining the redirect on the portal but i dont really know why... might be something specific on that site
@@ -73,6 +82,7 @@ function api_send_link( $request ) {
 	$settings = (object) get_option( 'mnml2fa', array() );
 
 	$user = false;
+	$return = "Check your email for the auto-login link";
 
 	if ( strpos( $request['mnml2falog'], '@' ) ) {
 		$request['mnml2falog'] = sanitize_user( wp_unslash( $request['mnml2falog'] ) );// this is done before the login check as well on ligon.php but get_user_by sanitizes for 'login' case... see https://github.com/WordPress/wordpress-develop/blob/847328068d8d5fef10cd76df635fafd6b47556d9/src/wp-login.php#L1214
@@ -80,6 +90,7 @@ function api_send_link( $request ) {
 	} elseif ( function_exists(__NAMESPACE__.'\send_via_twilio') ) {
 		$maybe_tel = preg_replace( '/\D/', '', $request['mnml2falog'] );
 		if ( strlen( $maybe_tel ) > 8 ) {
+			$return = "Check your phone for the auto-login link";
 			$user = apply_filters( 'mnml2fa_get_user_by_tele', null, $maybe_tel );// $maybe_tel is sanitized already to digits only
 			if ( $user === null ) {
 				$meta_key = $settings->telephone_user_meta ?? 'mnml2fano';
@@ -95,10 +106,10 @@ function api_send_link( $request ) {
 
 	if ( ! $user ) $user = get_user_by('login', $request['mnml2falog'] );
 
-	if ( ! $user ) return "Check your email for the sign in link!";// Dont want to admit the user doesnt esists
+	if ( ! $user ) return $return;// Dont want to admit the user doesnt esists
 
-	$key = bin2hex( random_bytes(16) );
-	
+	do { $key = random(16); } while ( get_transient( "mnml2fa_{$key}" ) );
+
 	$link = get_home_url() . "?tfal={$key}";
 	
 	$login_data = (object) [ 'id' => $user->ID, 'rm' => 0 ];
@@ -120,10 +131,10 @@ function api_send_link( $request ) {
 		$code = sprintf( "%06s", random_int(0, 999999) );// six digit code
 		set_transient( "mnml2fa_{$code}{$code_key}", $login_data, 300 );
 	}
-
 	if ( !empty( $tel ) ) {
 		$sent = send_via_twilio( $tel, $code, $link );
-		if ( $sent ) $return = "Check your phone for the sign in link!";
+		// error_log( 'send_via_twilio to $tel=' . $tel . ' RESULT: ' . var_export( $sent, 1 ) );
+		if ( $sent ) $return = "Check your phone for the auto-login link";
 	}
 	if ( empty( $sent ) ) {
 		$email = $user->user_email;// $user->get('user_email')
@@ -133,12 +144,13 @@ function api_send_link( $request ) {
 		$body = str_ireplace( [" %name%", "%name%" ], $name, $body );// handle the space this way in case of missing name, so you dont have the famous "Hello ,"
 		$body = add_markup_to_emails( $body, $code, $link );
 		$sent = wp_mail( $email, $subject, $body, 'Content-Type: text/html;' );
-		if ( $sent ) $return = "Check your email for the sign in link!";
+		if ( $sent ) $return = "Check your email for the auto-login link";
 	}
 	if ( ! $sent ) {
 		return "problem sending";
 	}
 	set_transient( "mnml2fa_{$key}", $login_data, 300 );
+	// if ( $code ) $return .= "<br>or enter the security code:";
 	return $return;
 }
 
@@ -157,10 +169,10 @@ function get_link_button() {
 	<input type="hidden" name="mnml2fak" id=mnml2fak />
 	
 	<div id="mnml2fa-code-sent">
-		<p><label>Check your email for the auto-login link
+		<p><span>Check your device for the auto-login link</span>
 		<?php if ( !empty($settings->code_with_magic_link) ) : ?>
-		<br>or enter the security code:</label>
-		<input type="number" name="mnml2fac" id="mnml2fac" class="input" size="20"  autocomplete="off"></p>
+		<br>or enter the security code:
+		<input type="number" name="mnml2fac" id="mnml2fac" class="input" size="20" autocomplete="one-time-code"></p>
 		<button id=mnml-code-submit class="button button-primary button-large" formnovalidate>Submit Code</button>
 		<?php endif; ?>
 	</div>
@@ -177,6 +189,8 @@ function get_link_button() {
 				fetch('/wp-json/mnml2fa/v1/sendlink',{method:'POST',body: f }).then(r=>{return r.json()}).then(r=>{
 					e.target.classList.add('link-sent');
 					// e.target.action='';
+					// document.querySelector('#mnml2fa-code-sent p').insertAdjacentHTML('afterBegin',r);
+					document.querySelector('#mnml2fa-code-sent span').textContent=r;
 					document.querySelector('#mnml2fac').focus();
 				});
 			}
@@ -235,6 +249,7 @@ function authenticate( $user, $user_name ) {
 				$phone = get_user_meta( $user->ID, $meta_key, true );
 			}
 			if ( $phone ) $sent = send_via_twilio( $phone, $code );
+			if ( $sent ) $sent = 'phone';
 		}
 		if ( ! $sent ) {
 
@@ -254,15 +269,17 @@ function authenticate( $user, $user_name ) {
 			$body = add_markup_to_emails( $body, $code );
 
 			$sent = wp_mail( $email, $subject, $body, 'Content-Type: text/html;' );
+			if ( $sent ) $sent = 'email';
 		}
 
 		if ( $sent ) {
 
 			$login_data = [ 'id' => $user->ID ];
 			set_transient( "mnml2fa_{$code}{$key}", $login_data, 300 );
-			$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? "&redirect_to=" . $_REQUEST['redirect_to'] : "";
-			$rememberme = ! empty( $_REQUEST['rememberme'] ) ? "&rm=1" : "";
-			wp_safe_redirect( "wp-login.php?action=2fa&k=" . $key . $rememberme . $redirect_to );
+			$login_url = site_url( 'wp-login.php', 'login' );
+			if ( ! empty( $_REQUEST['redirect_to'] ) ) $login_url = add_query_arg( 'redirect_to', urlencode( $_REQUEST['redirect_to'] ), $login_url );
+			$login_url = add_query_arg( ['action' => '2fa', 'd' => $sent, 'rm' => !empty($_REQUEST['rememberme']), 'k' => $key ], $login_url );
+			wp_redirect( $login_url );
 			exit;
 		} else {
 			error_log("not sent");
@@ -273,7 +290,7 @@ function authenticate( $user, $user_name ) {
 		$code_key = filter_var( $_POST['mnml2fak'], FILTER_SANITIZE_NUMBER_INT );
 		if ( strlen( $code_key ) < 9 ) return "code key was weird";
 
-		error_log( var_export( $_REQUEST, 1 ) );
+		// error_log( var_export( $_REQUEST, 1 ) );
 
 		$settings = (object) get_option( 'mnml2fa', array() );
 		
@@ -321,19 +338,6 @@ function login_form(){
 	$redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? $_REQUEST['redirect_to'] : home_url();// this should always be set though see https://github.com/WordPress/WordPress/blob/c6028577a462f235da67e5d3dcf1dc42f9a96669/wp-login.php#L1226
 	$rememberme = ! empty( $_GET['rm'] );
 
-	// if ( 'POST' === $_SERVER['REQUEST_METHOD'] ) {
-		// check code
-
-		// either run wp_signon() https://github.com/WordPress/WordPress/blob/c6028577a462f235da67e5d3dcf1dc42f9a96669/wp-includes/user.php#L33
-		// or redirect to login 
-
-		// either way probably pass authentication with a filter on 'authenticate'
-
-		// $redirect_to = ! empty( $_REQUEST['redirect_to'] ) ? $_REQUEST['redirect_to'] : 'wp-login.php?action=2fa';
-		// wp_safe_redirect( $redirect_to );
-		// exit;
-	// }
-
 	$key = filter_input( INPUT_GET, 'k', FILTER_SANITIZE_STRING );
 	if ( ! $key ) {
 		error_log("something's wrong, there's no key for 2fa");
@@ -341,27 +345,20 @@ function login_form(){
 		exit;
 	}
 
-	login_header( 'New Device Authentication', '<p class="message">A code was just sent to your security device.  Please enter it to continue.</p>' );
-	
+	$device = filter_input( INPUT_GET, 'd', FILTER_SANITIZE_STRING ) ?: 'security device';
+	login_header( "New Device Authentication", "<p class=message>A code was just sent to your {$device}. Please enter it to continue.</p>" );
 	?>
 	<style>#mnml2fac::-webkit-inner-spin-button{display:none}</style>
-	<form name="2fa" id="2fa" action="<?php echo esc_url( network_site_url( 'wp-login.php', 'login_post' ) ); ?>" method="post">
-		<input type="hidden" name="mnml2fak" value="<?php echo $key; ?>" />
-		<input type="hidden" name="redirect_to" value="<?php echo esc_attr( $redirect_to ); ?>" />
-		<p>
-			<input type="number" name="mnml2fac" id="mnml2fac" class="input" size="20"  autocomplete="off" autofocus />
-		</p>
-		<p class="forgetmenot">
-			<input name="rememberme" type="checkbox" id="rememberme" value="forever" <?php checked( $rememberme ); ?> /> <label for="rememberme"><?php esc_html_e( 'Remember Me' ); ?></label>
-		</p>	
-		<p class="submit">
-			<input type="submit" name="wp-submit" id="wp-submit" class="button button-primary button-large" value="Submit" />
-		</p>
+	<form name=2fa id=2fa action="<?php echo esc_url( network_site_url( 'wp-login.php', 'login_post' ) ); ?>" method=post>
+		<input type=hidden name=mnml2fak value="<?php echo $key; ?>" />
+		<input type=hidden name=redirect_to value="<?php echo sanitize_url( $redirect_to ); ?>" />
+		<p><input type=number name=mnml2fac id=mnml2fac class=input size=20 autocomplete=one-time-code autofocus />
+		<p class=forgetmenot><input name=rememberme type=checkbox id=rememberme value=forever <?php checked( $rememberme ); ?> /> <label for=rememberme><?php esc_html_e( 'Remember Me' ); ?></label>
+		<p class=submit><input type=submit name=wp-submit id=wp-submit class="button button-primary button-large" value=Submit />
 	</form>
 	<?php
 
 	login_footer( 'user_login' );
-
 	exit;
 }
 
@@ -400,8 +397,8 @@ function add_settings_link( $links, $file ) {
 function settings_page() {
 
 	$fields = array_fill_keys([
-		'type',
 		'no_login_alerts',
+		'type',
 		'code_settings',
 		'code_email_subject',
 		'code_email_body',
@@ -531,4 +528,13 @@ function add_markup_to_emails( $message, $code='', $link='' ) {
 <?php
 
 	return ob_get_clean();
+}
+
+/**
+ * generate random strings
+ */
+function random( $len=8, $prefix='' ) {
+	$chars = array_merge( range('0','9'), range('A','Z'), range('a','z') );
+	for ($i=0; $i < $len; $i++) $prefix .= $chars[mt_rand(0, count($chars)-1)];
+	return $prefix;
 }
