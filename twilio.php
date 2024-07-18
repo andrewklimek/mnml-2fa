@@ -2,19 +2,30 @@
 namespace mnml2fa;
 defined('ABSPATH') || exit;
 
-function send_via_twilio( $phone, $code='', $link='' ) {
+/**
+ * https://www.twilio.com/docs/messaging/api/message-resource#create-a-message-resource
+ */
+function send_via_twilio( $to, $code='', $link='' ) {
 
-	$phone = apply_filters( 'mnml2fa_phone_number', $phone );
-	if ( ! $phone ) return false;
+	$to = apply_filters( 'mnml2fa_phone_number', $to );
+	if ( ! $to ) return false;
+	$to = '+'. trim( $to, ' +' );
+	$post = [ 'To' => $to ];
 
 	$settings = get_option( 'mnml2fa' );
-
-	// API keys - does it have to be type "main" ?
 	$sid = $settings['twilio_account_sid'];// Account SID
 	$user = $settings['twilio_api_sid'];// API SID
 	$pass = $settings['twilio_api_secret'];// API Secret
-	$from = $settings['twilio_from'];// from can just be a text string somehow... not in the US though.  See https://www.twilio.com/docs/sms/send-messages#use-an-alphanumeric-sender-id
-	$to = "+" . $phone;
+
+	// phone OR can just be a text string if supported country, and may need to be registered: https://www.twilio.com/docs/glossary/what-alphanumeric-sender-id#twilio-docs-content-area
+	if ( !empty( $settings['twilio_from'] ) ) {
+		$post['From'] = trim( $settings['twilio_from'], ' +' );
+		if ( is_numeric( $post['From'] ) ) $post['From'] = '+'. $post['From'];
+	}
+
+	if ( !empty( $settings['twilio_messaging_service_sid'] ) ) $post['MessagingServiceSid'] = $settings['twilio_messaging_service_sid'];// starts with MG https://help.twilio.com/articles/223181308-Getting-started-with-Messaging-Services
+
+	if ( empty( $post['From'] ) && empty( $post['MessagingServiceSid'] ) ) return false;// need one or the other to send.
 
 	$body_c = $body_l = '';
 
@@ -33,27 +44,32 @@ function send_via_twilio( $phone, $code='', $link='' ) {
 		}
 		if ( $body_c ) $body_l = " OR " . lcfirst( $body_l );
 	}
-	$body = $body_c . $body_l;
+	$post['Body'] = $body_c . $body_l;
+	if ( empty( $post['Body'] ) ) return false;
+
+	// could add domain-specific code: https://developer.apple.com/news/?id=z0i801mg
+	// @example.com #123456
 
 	// https://www.php.net/manual/en/function.curl-setopt.php
 	// https://github.com/twilio/twilio-php/blob/main/src/Twilio/Http/CurlClient.php
-	$options = array(
+	$setopt = [
 		CURLOPT_URL => "https://api.twilio.com/2010-04-01/Accounts/$sid/Messages.json",
 		CURLOPT_RETURNTRANSFER => true,
 		// CURLOPT_HEADER => true,// helped with debugging
 		CURLOPT_TIMEOUT => 60,
 		CURLOPT_POST => true,
 		CURLOPT_HTTPHEADER => ['Authorization: Basic ' . base64_encode("$user:$pass")],
-		CURLOPT_POSTFIELDS => http_build_query([ 'From' => $from, 'To' => $to, 'Body' => $body ])
-	);
+		CURLOPT_POSTFIELDS => http_build_query($post),
+	];
 	$ch = curl_init();
-	curl_setopt_array($ch, $options);
+	curl_setopt_array($ch, $setopt);
 	$result = curl_exec($ch);
 	curl_close($ch);
 	$result = json_decode($result);
 
 	if ( empty( $result->date_created ) || !empty( $result->code ) ) {
 		error_log("twilio failed: " . var_export($result,true));
+		error_log("request body: " . var_export($post,true));
 		return false;
 	}
 	return true;

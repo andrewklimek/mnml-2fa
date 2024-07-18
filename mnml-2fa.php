@@ -13,7 +13,7 @@ namespace mnml2fa;
 defined('ABSPATH') || exit;
 
 $settings = (object) get_option( 'mnml2fa', array() );
-if ( !empty($settings->twilio_account_sid) && !empty($settings->twilio_api_sid) && !empty($settings->twilio_api_secret) && !empty($settings->twilio_from) ) {
+if ( !empty($settings->twilio_account_sid) && !empty($settings->twilio_api_sid) && !empty($settings->twilio_api_secret) && ( !empty($settings->twilio_from) || !empty($settings->twilio_messaging_service_sid) ) ) {
 	require __DIR__ . '/twilio.php';
 }
 
@@ -403,8 +403,8 @@ function add_settings_link( $links, $file ) {
 function settings_page() {
 
 	$fields = array_fill_keys([
-		'no_login_alerts',
 		'type',
+		'no_login_alerts',
 		'code_settings',
 		'code_email_subject',
 		'code_email_body',
@@ -417,7 +417,7 @@ function settings_page() {
 		'link_button_text','link_button_color',
 		'link_sms_message',
 		'link_settings_end',
-		'twilio_account_sid', 'twilio_api_sid', 'twilio_api_secret', 'twilio_from',
+		'twilio_account_sid', 'twilio_api_sid', 'twilio_api_secret', 'twilio_messaging_service_sid', 'twilio_from',
 		'telephone_user_meta',
 	],
 	[ 'type' => 'text' ]);// default
@@ -441,7 +441,8 @@ function settings_page() {
 	$fields['no_login_alerts']['type'] = 'checkbox';
 	$fields['no_login_alerts']['desc'] = 'Disable new login alert emails';
 	$fields['twilio_account_sid']['before'] = "<h3>Twilio settings for SMS codes instead of email</h3>";
-
+	$fields['twilio_account_sid']['placeholder'] = 'AC...';
+	$fields['twilio_messaging_service_sid']['placeholder'] = 'MG...';
 
 
 	/**
